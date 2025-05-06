@@ -1,3 +1,9 @@
+export interface OrderItem {
+  itemId: number;
+  name: string;
+  price: number;
+  quantity: number;
+}
 
 export interface MenuOption {
   id: number;
