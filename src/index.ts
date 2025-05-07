@@ -13,7 +13,7 @@ interface CustomSocket extends Socket {
     deviceId?: string;
   }
 
-async function startServer() {
+export async function startServer() {
     const db = await initializeDatabase('restaurant.db');
     const app = express();
     const httpServer = createServer(app);

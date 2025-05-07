@@ -1,57 +1,39 @@
+import { open, Database as SQLiteDatabase } from 'sqlite';
 import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
 
+export async function initializeDatabase(dbPath: string): Promise<SQLiteDatabase> {
+  try {
+    const db = await open({
+      filename: dbPath,
+      driver: sqlite3.Database,
+    });
+    console.log(`Connected to database: ${dbPath}`);
 
-export interface OrderItem {
-  itemId: number;
-  name: string;
-  price: number;
-  quantity: number;
-}
+    // Create Sessions table
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS Sessions (
+        deviceId TEXT PRIMARY KEY,
+        currentOrder TEXT NOT NULL,
+        createdAt TEXT NOT NULL
+      )
+    `);
+    console.log('Sessions table created or already exists');
 
+    // Create Orders table
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS Orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deviceId TEXT NOT NULL,
+        items TEXT NOT NULL,
+        status TEXT NOT NULL,
+        createdAt TEXT NOT NULL
+      )
+    `);
+    console.log('Orders table created or already exists');
 
-export async function initializeDatabase(dbFile: string = ':memory:') {
-  const db = await open({
-    filename: dbFile,
-    driver: sqlite3.Database
-  });
-
-  
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS Sessions (
-      deviceId TEXT PRIMARY KEY,
-      currentOrder TEXT,  -- JSON string of OrderItem[]
-      createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS Orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      deviceId TEXT,
-      items TEXT,  -- JSON string of OrderItem[]
-      status TEXT CHECK(status IN ('placed', 'cancelled')),
-      createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (deviceId) REFERENCES Sessions(deviceId)
-    )
-  `);
-
-  
-  async function cleanupOldSessions() {
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    await db.run(`
-      DELETE FROM Sessions
-      WHERE createdAt < ?
-    `, twentyFourHoursAgo);
+    return db;
+  } catch (err) {
+    console.error('Error initializing database:', err);
+    throw err;
   }
-
-  
-  await cleanupOldSessions();
-
-  
-  setInterval(cleanupOldSessions, 60 * 60 * 1000);
-
-  return db;
 }
-
