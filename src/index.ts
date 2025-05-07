@@ -20,9 +20,10 @@ async function startServer() {
     
     const io = new Server(httpServer, {
       cors: {
-        origin: process.env.FRONTEND_URL,
-        methods: ['GET', 'POST']
-      }
+        origin: '*',
+        methods: ['GET', 'POST'],
+      },
+      transports: ['websocket'],
     });
     
     const PORT = process.env.PORT || 4000;

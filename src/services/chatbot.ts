@@ -28,6 +28,7 @@ enum UserState {
 interface SessionData {
   state: UserState;
   selectedItemId?: number;
+  lastInputTime: number; // For debouncing
 }
 
 // Interface for custom socket
@@ -36,8 +37,15 @@ interface CustomSocket extends Socket {
   sessionData: SessionData;
 }
 
+// Input validation result
+interface ValidationResult {
+  isValid: boolean;
+  errorMessage?: string;
+}
+
 export class ChatBotService {
   private db: Database;
+  private readonly DEBOUNCE_MS = 500; // Debounce interval in milliseconds
 
   constructor(db: Database) {
     this.db = db;
@@ -45,13 +53,13 @@ export class ChatBotService {
 
   // Initialize socket handlers
   initializeSocket(socket: CustomSocket) {
-    socket.sessionData = { state: UserState.MAIN_MENU };
+    socket.sessionData = { state: UserState.MAIN_MENU, lastInputTime: 0 };
     this.sendWelcomeMessage(socket);
 
     socket.on('message', (data: { text: string; deviceId?: string }) => {
       // Validate deviceId in message
       if (!data.deviceId || data.deviceId !== socket.deviceId) {
-        socket.emit('error', { text: 'Invalid or missing deviceId in message.' });
+        socket.emit('error', { text: 'Invalid or missing deviceId in message.', deviceId: socket.deviceId });
         logger.error({ deviceId: socket.deviceId, message: 'Invalid deviceId in message', receivedDeviceId: data.deviceId });
         return;
       }
@@ -71,20 +79,47 @@ export class ChatBotService {
     logger.info({ deviceId: socket.deviceId, message: 'Sent welcome message', response: message });
   }
 
-  // Validate if input is numeric and matches valid options
-  private isValidInput(input: string, validOptions: number[]): boolean {
+  // Validate input based on context
+  private validateInput(input: string, validOptions: number[], context: string): ValidationResult {
+    // Check for non-numeric input
+    if (!/^\d+$/.test(input)) {
+      return { isValid: false, errorMessage: `Invalid input: "${input}" is not a number. Please select a valid option.` };
+    }
+
     const num = parseInt(input);
-    return !isNaN(num) && validOptions.includes(num);
+    // Check if input is in valid options
+    if (!validOptions.includes(num)) {
+      return { isValid: false, errorMessage: `Invalid input: "${input}" is not a valid ${context}. Please select: ${validOptions.join(', ')}.` };
+    }
+
+    return { isValid: true };
+  }
+
+  // Check for rapid submissions
+  private isDebounced(socket: CustomSocket): boolean {
+    const now = Date.now();
+    if (now - socket.sessionData.lastInputTime < this.DEBOUNCE_MS) {
+      return true;
+    }
+    socket.sessionData.lastInputTime = now;
+    return false;
   }
 
   // Handle incoming messages
   private async handleMessage(socket: CustomSocket, input: string) {
     logger.info({ deviceId: socket.deviceId, input });
 
+    // Check for rapid submissions
+    if (this.isDebounced(socket)) {
+      socket.emit('message', { text: 'Please wait a moment before submitting again.', deviceId: socket.deviceId });
+      logger.info({ deviceId: socket.deviceId, message: 'Input debounced' });
+      return;
+    }
+
     // Verify session exists
     const session = await this.db.get(`SELECT deviceId FROM Sessions WHERE deviceId = ?`, socket.deviceId);
     if (!session) {
-      socket.emit('error', { text: 'Session not found. Please reconnect.' });
+      socket.emit('error', { text: 'Session not found. Please reconnect.', deviceId: socket.deviceId });
       logger.error({ deviceId: socket.deviceId, message: 'Session not found' });
       socket.disconnect();
       return;
@@ -92,11 +127,15 @@ export class ChatBotService {
 
     const state = socket.sessionData.state;
     const validMainOptions = [1, 99, 98, 97, 0];
-    const validMenuIds = getFormattedMenu().split('\n').map(line => parseInt(line.split(':')[0])).filter(n => !isNaN(n));
+    const validMenuIds = getFormattedMenu()
+      .split('\n')
+      .map(line => parseInt(line.split(':')[0]))
+      .filter(n => !isNaN(n));
 
     if (state === UserState.MAIN_MENU) {
-      if (!this.isValidInput(input, validMainOptions)) {
-        this.sendInvalidInput(socket, `Invalid input, please select: ${validMainOptions.join(', ')}`);
+      const validation = this.validateInput(input, validMainOptions, 'menu option');
+      if (!validation.isValid) {
+        this.sendInvalidInput(socket, validation.errorMessage!);
         return;
       }
 
@@ -120,15 +159,16 @@ export class ChatBotService {
           break;
       }
     } else if (state === UserState.ITEM_SELECTION) {
-      if (!this.isValidInput(input, validMenuIds)) {
-        this.sendInvalidInput(socket, `Invalid input, please select a valid menu item: ${validMenuIds.join(', ')}`);
+      const validation = this.validateInput(input, validMenuIds, 'menu item');
+      if (!validation.isValid) {
+        this.sendInvalidInput(socket, validation.errorMessage!);
         return;
       }
 
       const itemId = parseInt(input);
       const item = getMenuItem(itemId);
       if (!item) {
-        this.sendInvalidInput(socket, `Invalid item ID: ${itemId}`);
+        this.sendInvalidInput(socket, `Invalid item ID: ${itemId}. Please select a valid menu item.`);
         return;
       }
 
@@ -146,26 +186,27 @@ export class ChatBotService {
     } else if (state === UserState.SUB_MENU) {
       const itemId = socket.sessionData.selectedItemId;
       if (!itemId) {
-        this.sendInvalidInput(socket, 'No item selected');
+        this.sendInvalidInput(socket, 'No item selected. Please start over.');
         return;
       }
 
       const item = getMenuItem(itemId);
       if (!item || !item.options) {
-        this.sendInvalidInput(socket, 'Invalid item or no options available');
+        this.sendInvalidInput(socket, 'Invalid item or no options available. Please start over.');
         return;
       }
 
       const validOptionIds = item.options.map(opt => opt.id);
-      if (!this.isValidInput(input, validOptionIds)) {
-        this.sendInvalidInput(socket, `Invalid option, please select: ${validOptionIds.join(', ')}`);
+      const validation = this.validateInput(input, validOptionIds, 'sub-menu option');
+      if (!validation.isValid) {
+        this.sendInvalidInput(socket, validation.errorMessage!);
         return;
       }
 
       const optionId = parseInt(input);
       const option = getMenuOption(itemId, optionId);
       if (!option) {
-        this.sendInvalidInput(socket, `Invalid option ID: ${optionId}`);
+        this.sendInvalidInput(socket, `Invalid option ID: ${optionId}. Please select a valid option.`);
         return;
       }
 
@@ -175,9 +216,25 @@ export class ChatBotService {
     }
   }
 
-  // Send invalid input message
+  // Send invalid input message and repeat current menu
   private sendInvalidInput(socket: CustomSocket, message: string) {
-    socket.emit('message', { text: message, deviceId: socket.deviceId });
+    let repeatMenu = '';
+    if (socket.sessionData.state === UserState.MAIN_MENU) {
+      repeatMenu = `Welcome to the Restaurant ChatBot!\n${getFormattedMenu()}\n\n` +
+                   `Select 1 to Place an order\n` +
+                   `Select 99 to checkout order\n` +
+                   `Select 98 to see order history\n` +
+                   `Select 97 to see current order\n` +
+                   `Select 0 to cancel order`;
+    } else if (socket.sessionData.state === UserState.ITEM_SELECTION) {
+      repeatMenu = `Please select an item from the menu:\n${getFormattedMenu()}`;
+    } else if (socket.sessionData.state === UserState.SUB_MENU && socket.sessionData.selectedItemId) {
+      const item = getMenuItem(socket.sessionData.selectedItemId);
+      const subMenu = getFormattedSubMenu(socket.sessionData.selectedItemId);
+      repeatMenu = `Select an option for ${item?.name}:\n${subMenu}`;
+    }
+
+    socket.emit('message', { text: `${message}\n\n${repeatMenu}`, deviceId: socket.deviceId });
     logger.info({ deviceId: socket.deviceId, message: 'Sent invalid input response', response: message });
   }
 
@@ -187,7 +244,7 @@ export class ChatBotService {
       const session = await this.db.get(`SELECT currentOrder FROM Sessions WHERE deviceId = ?`, socket.deviceId);
       let currentOrder: OrderItem[] = session.currentOrder ? JSON.parse(session.currentOrder) : [];
 
-      const existingItem = currentOrder.find(i => i.itemId === item.id);
+      const existingItem = currentOrder.find(i => i.itemId === item.id && i.name === item.name);
       if (existingItem) {
         existingItem.quantity += 1;
       } else {
