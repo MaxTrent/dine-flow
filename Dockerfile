@@ -9,7 +9,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-COPY .env ./
+# COPY .env ./
 
 EXPOSE 4000
 
