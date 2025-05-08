@@ -1,6 +1,5 @@
-
 import { Socket } from 'socket.io';
-import { Database } from 'sqlite';
+import { Database } from '../models/database';
 import winston from 'winston';
 import { getFormattedMenu, getFormattedSubMenu, getMenuItem, getMenuOption, MenuItem, OrderItem } from '../models/menu';
 
@@ -13,7 +12,7 @@ const logger = winston.createLogger({
   ),
   transports: [
     new winston.transports.Console(),
-    new winston.transports.File({ filename: 'chatbot.log' })
+    new winston.transports.File({ filename: 'logs/app.log' })
   ]
 });
 
@@ -117,7 +116,7 @@ export class ChatBotService {
     }
 
     // Verify session exists
-    const session = await this.db.get(`SELECT deviceId FROM Sessions WHERE deviceId = ?`, socket.deviceId);
+    const session = await this.db.get(`SELECT deviceId FROM Sessions WHERE deviceId = ?`, [socket.deviceId]);
     if (!session) {
       socket.emit('error', { text: 'Session not found. Please reconnect.', deviceId: socket.deviceId });
       logger.error({ deviceId: socket.deviceId, message: 'Session not found' });
@@ -241,7 +240,7 @@ export class ChatBotService {
   // Add item to current order
   private async addItemToOrder(socket: CustomSocket, item: MenuItem) {
     try {
-      const session = await this.db.get(`SELECT currentOrder FROM Sessions WHERE deviceId = ?`, socket.deviceId);
+      const session = await this.db.get(`SELECT currentOrder FROM Sessions WHERE deviceId = ?`, [socket.deviceId]);
       let currentOrder: OrderItem[] = session.currentOrder ? JSON.parse(session.currentOrder) : [];
 
       const existingItem = currentOrder.find(i => i.itemId === item.id && i.name === item.name);
@@ -272,7 +271,7 @@ export class ChatBotService {
   // Handle checkout
   private async handleCheckout(socket: CustomSocket) {
     try {
-      const session = await this.db.get(`SELECT currentOrder FROM Sessions WHERE deviceId = ?`, socket.deviceId);
+      const session = await this.db.get(`SELECT currentOrder FROM Sessions WHERE deviceId = ?`, [socket.deviceId]);
       const currentOrder: OrderItem[] = session.currentOrder ? JSON.parse(session.currentOrder) : [];
 
       if (currentOrder.length === 0) {
@@ -306,7 +305,7 @@ export class ChatBotService {
     try {
       const orders = await this.db.all(
         `SELECT id, items, createdAt FROM Orders WHERE deviceId = ? AND status = 'placed'`,
-        socket.deviceId
+        [socket.deviceId]
       );
 
       if (orders.length === 0) {
@@ -333,7 +332,7 @@ export class ChatBotService {
   // Handle current order
   private async handleCurrentOrder(socket: CustomSocket) {
     try {
-      const session = await this.db.get(`SELECT currentOrder FROM Sessions WHERE deviceId = ?`, socket.deviceId);
+      const session = await this.db.get(`SELECT currentOrder FROM Sessions WHERE deviceId = ?`, [socket.deviceId]);
       const currentOrder: OrderItem[] = session.currentOrder ? JSON.parse(session.currentOrder) : [];
 
       if (currentOrder.length === 0) {
@@ -358,7 +357,7 @@ export class ChatBotService {
   // Handle cancel order
   private async handleCancelOrder(socket: CustomSocket) {
     try {
-      const session = await this.db.get(`SELECT currentOrder FROM Sessions WHERE deviceId = ?`, socket.deviceId);
+      const session = await this.db.get(`SELECT currentOrder FROM Sessions WHERE deviceId = ?`, [socket.deviceId]);
       const currentOrder: OrderItem[] = session.currentOrder ? JSON.parse(session.currentOrder) : [];
 
       if (currentOrder.length === 0) {
