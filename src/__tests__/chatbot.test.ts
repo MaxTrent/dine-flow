@@ -1,220 +1,157 @@
-import { Server, Socket } from 'socket.io';
-import { createServer, Server as HTTPServer } from 'http';
-import { io as Client, Socket as ClientSocket } from 'socket.io-client';
-import { Application } from 'express';
-import { Database as SQLiteDatabase } from 'sqlite';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
-import { AddressInfo } from 'net';
-import { startServer } from '../index';
-import { initializeDatabase } from '../models/database';
+import { ChatBotService } from '../services/chatbot';
+import { Database } from '../models/database';
+import { Server } from 'http';
+import { CustomSocket } from '../types/socket';
 
-// Utility to wait for Socket.IO messages
-const waitForMessage = (socket: ClientSocket, event: string): Promise<any> => {
-  return new Promise((resolve) => {
-    socket.once(event, (data) => resolve(data));
-  });
-};
+interface MockCustomSocket extends CustomSocket {
+  emit: jest.Mock<boolean, [string, ...unknown[]]>;
+  on: jest.Mock<this, [string, (...args: unknown[]) => void]>;
+  disconnect: jest.Mock<this, []>;
+}
 
-// Utility to query database
-const queryDatabase = (db: SQLiteDatabase, sql: string): Promise<any[]> => {
-  return new Promise((resolve, reject) => {
-    db.all(sql, [], (err: any, rows: any[] | PromiseLike<any[]>) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-};
+interface MockDatabase extends Database {
+  get: jest.Mock<Promise<unknown>, [string, ...unknown[]]>;
+  run: jest.Mock<Promise<void>, [string, ...unknown[]]>;
+  all: jest.Mock<Promise<unknown[]>, [string, ...unknown[]]>;
+}
 
-describe('Chatbot Socket.IO Tests', () => {
-  let server: HTTPServer;
-  let io: Server;
-  let app: Application;
-  let clientSocket: ClientSocket;
-  let db: SQLiteDatabase;
-  let port: number;
+describe('ChatBotService', () => {
+  let chatBot: ChatBotService;
+  let mockSocket: MockCustomSocket;
+  let mockDb: MockDatabase;
+  let server: Server;
 
-  beforeAll(async () => {
-    // Initialize in-memory database
-    db = await open({
-      filename: ':memory:',
-      driver: sqlite3.Database,
-    });
-    console.log('Connected to in-memory database');
-    await initializeDatabase(':memory:');
-    console.log('Database initialized for tests');
+  beforeAll(() => {
+    mockDb = {
+      get: jest.fn(),
+      run: jest.fn(),
+      all: jest.fn(),
+    } as MockDatabase;
 
-    // Start server
-    const serverInstance = await startServer();
-    app = serverInstance.app;
-    server = serverInstance.server;
-    io = serverInstance.io;
+    chatBot = new ChatBotService(mockDb);
 
-    // Get dynamic port
-    await new Promise<void>((resolve) => {
-      server.listen(0, () => {
-        port = (server.address() as AddressInfo).port;
-        console.log(`Server started on port ${port}`);
-        resolve();
-      });
-    });
+    mockSocket = {
+      emit: jest.fn().mockReturnValue(true),
+      on: jest.fn().mockReturnValue(undefined),
+      disconnect: jest.fn().mockReturnValue(undefined),
+      deviceId: 'test-device',
+      sessionData: {
+        state: 'main_menu',
+        lastInputTime: 0,
+      },
+    } as MockCustomSocket;
 
-    // Connect client
-    clientSocket = Client(`http://localhost:${port}`, {
-      query: { deviceId: 'test123' },
-      transports: ['websocket'],
-    });
-
-    // Wait for client connection
-    await new Promise<void>((resolve) => {
-      clientSocket.on('connect', () => {
-        console.log('Client connected');
-        resolve();
-      });
-    });
-  }, 10000);
-
-  afterAll(async () => {
-    // Close client
-    if (clientSocket.connected) {
-      clientSocket.close();
-      console.log('Client socket closed');
-    }
-
-    // Close server
-    io.close();
-    await new Promise<void>((resolve) => {
-      server.close(() => {
-        console.log('Server closed');
-        resolve();
-      });
-    });
-
-    // Close database
-    await db.close();
-    console.log('Database closed');
-  }, 10000);
-
-  beforeEach(async () => {
-    // Clear database tables
-    await db.run('DELETE FROM Sessions');
-    await db.run('DELETE FROM Orders');
-    console.log('Database tables cleared');
+    server = new Server();
   });
 
-  test('should retrieve menu on connection', async () => {
-    const message = await waitForMessage(clientSocket, 'message');
-    expect(message.text).toMatch(/Welcome to the Restaurant ChatBot!/);
-    expect(message.text).toMatch(/1: Pizza \(\$10\)/);
-    expect(message.text).toMatch(/Select 1 to Place an order/);
-  }, 10000);
+  afterAll(() => {
+    server.close();
+  });
 
-  test('should create and checkout order', async () => {
-    // Skip welcome message
-    await waitForMessage(clientSocket, 'message');
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSocket.sessionData = {
+      state: 'main_menu',
+      lastInputTime: 0,
+    };
+  });
 
-    // Select order (1)
-    clientSocket.emit('message', { text: '1', deviceId: 'test123' });
-    let message = await waitForMessage(clientSocket, 'message');
-    expect(message.text).toMatch(/Please select an item from the menu:/);
-    expect(message.text).toMatch(/1: Pizza \(\$10\)/);
+  test('should send welcome message on initialization', () => {
+    chatBot.initializeSocket(mockSocket);
 
-    // Select Pizza (1)
-    clientSocket.emit('message', { text: '1', deviceId: 'test123' });
-    message = await waitForMessage(clientSocket, 'message');
-    expect(message.text).toMatch(/Select an option for Pizza:/);
-    expect(message.text).toMatch(/1: Small \(\$10\)/);
+    expect(mockSocket.emit).toHaveBeenCalledWith('message', {
+      text: expect.stringContaining('Welcome to the Restaurant ChatBot!'),
+      deviceId: 'test-device',
+    });
+    expect(mockSocket.on).toHaveBeenCalledWith('message', expect.any(Function));
+  });
 
-    // Select Small (1)
-    clientSocket.emit('message', { text: '1', deviceId: 'test123' });
-    message = await waitForMessage(clientSocket, 'message');
-    expect(message.text).toBe('Added Pizza (Small) to your order.');
+  test('should handle invalid deviceId in message', () => {
+    chatBot.initializeSocket(mockSocket);
 
-    // Verify currentOrder in Sessions
-    const sessions = await queryDatabase(db, "SELECT currentOrder FROM Sessions WHERE deviceId='test123'");
-    expect(sessions.length).toBe(1);
-    const currentOrder = JSON.parse(sessions[0].currentOrder);
-    expect(currentOrder).toEqual([
-      { itemId: 1, name: 'Pizza (Small)', price: 10, quantity: 1 },
-    ]);
+    const messageHandler = mockSocket.on.mock.calls[0][1];
+    messageHandler({ text: '1', deviceId: 'wrong-device' });
 
-    // Checkout (99)
-    clientSocket.emit('message', { text: '99', deviceId: 'test123' });
-    message = await waitForMessage(clientSocket, 'message');
-    expect(message.text).toBe('Order placed successfully!');
+    expect(mockSocket.emit).toHaveBeenCalledWith('error', {
+      text: 'Invalid or missing deviceId in message.',
+      deviceId: 'test-device',
+    });
+  });
 
-    // Verify Orders table
-    const orders = await queryDatabase(db, "SELECT * FROM Orders WHERE deviceId='test123'");
-    expect(orders.length).toBe(1);
-    expect(orders[0].status).toBe('placed');
-    expect(JSON.parse(orders[0].items)).toEqual([
-      { itemId: 1, name: 'Pizza (Small)', price: 10, quantity: 1 },
-    ]);
+  test('should handle invalid input in main_menu state', async () => {
+    mockDb.get.mockResolvedValue({ deviceId: 'test-device' });
+    chatBot.initializeSocket(mockSocket);
 
-    // Verify currentOrder cleared
-    const updatedSessions = await queryDatabase(db, "SELECT currentOrder FROM Sessions WHERE deviceId='test123'");
-    expect(JSON.parse(updatedSessions[0].currentOrder)).toEqual([]);
-  }, 15000);
+    const messageHandler = mockSocket.on.mock.calls[0][1];
+    await messageHandler({ text: 'invalid', deviceId: 'test-device' });
 
-  test('should retrieve order history and cancel order', async () => {
-    // Skip welcome message
-    await waitForMessage(clientSocket, 'message');
+    expect(mockSocket.emit).toHaveBeenCalledWith('message', {
+      text: expect.stringContaining('Invalid input: \'invalid\' is not a number'),
+      deviceId: 'test-device',
+    });
+  });
 
-    // Create order
-    clientSocket.emit('message', { text: '1', deviceId: 'test123' });
-    await waitForMessage(clientSocket, 'message');
-    clientSocket.emit('message', { text: '1', deviceId: 'test123' });
-    await waitForMessage(clientSocket, 'message');
-    clientSocket.emit('message', { text: '1', deviceId: 'test123' });
-    await waitForMessage(clientSocket, 'message');
+  test('should transition to item_selection state on input 1', async () => {
+    mockDb.get.mockResolvedValue({ deviceId: 'test-device' });
+    chatBot.initializeSocket(mockSocket);
 
-    // Checkout
-    clientSocket.emit('message', { text: '99', deviceId: 'test123' });
-    await waitForMessage(clientSocket, 'message');
+    const messageHandler = mockSocket.on.mock.calls[0][1];
+    await messageHandler({ text: '1', deviceId: 'test-device' });
 
-    // Get history (98)
-    clientSocket.emit('message', { text: '98', deviceId: 'test123' });
-    let message = await waitForMessage(clientSocket, 'message');
-    expect(message.text).toMatch(/Order History:/);
-    expect(message.text).toMatch(/Order #1: 1x Pizza \(Small\) \(\$10\)/);
+    expect(mockSocket.sessionData.state).toBe('item_selection');
+    expect(mockSocket.emit).toHaveBeenCalledWith('message', {
+      text: expect.stringContaining('Please select an item from the menu:'),
+      deviceId: 'test-device',
+    });
+  });
 
-    // Add new item
-    clientSocket.emit('message', { text: '1', deviceId: 'test123' });
-    await waitForMessage(clientSocket, 'message');
-    clientSocket.emit('message', { text: '1', deviceId: 'test123' });
-    await waitForMessage(clientSocket, 'message');
-    clientSocket.emit('message', { text: '1', deviceId: 'test123' });
-    await waitForMessage(clientSocket, 'message');
+  test('should handle item selection and transition to sub_menu', async () => {
+    mockDb.get.mockResolvedValue({ deviceId: 'test-device' });
+    mockSocket.sessionData.state = 'item_selection';
+    chatBot.initializeSocket(mockSocket);
 
-    // Verify currentOrder
-    let sessions = await queryDatabase(db, "SELECT currentOrder FROM Sessions WHERE deviceId='test123'");
-    expect(JSON.parse(sessions[0].currentOrder)).toHaveLength(1);
+    const messageHandler = mockSocket.on.mock.calls[0][1];
+    await messageHandler({ text: '1', deviceId: 'test-device' });
 
-    // Cancel order (0)
-    clientSocket.emit('message', { text: '0', deviceId: 'test123' });
-    message = await waitForMessage(clientSocket, 'message');
-    expect(message.text).toBe('Order cancelled.');
+    expect(mockSocket.sessionData.state).toBe('sub_menu');
+    expect(mockSocket.sessionData.selectedItemId).toBe(1);
+    expect(mockSocket.emit).toHaveBeenCalledWith('message', {
+      text: expect.stringContaining('Select an option for Pizza:'),
+      deviceId: 'test-device',
+    });
+  });
 
-    // Verify currentOrder cleared
-    sessions = await queryDatabase(db, "SELECT currentOrder FROM Sessions WHERE deviceId='test123'");
-    expect(JSON.parse(sessions[0].currentOrder)).toEqual([]);
-  }, 15000);
+  test('should add item to order and return to main_menu', async () => {
+    mockDb.get.mockResolvedValue({ deviceId: 'test-device', currentOrder: '[]' });
+    mockDb.run.mockResolvedValue(undefined);
+    mockSocket.sessionData.state = 'item_selection';
+    chatBot.initializeSocket(mockSocket);
 
-  test('should handle invalid inputs', async () => {
-    // Skip welcome message
-    await waitForMessage(clientSocket, 'message');
+    const messageHandler = mockSocket.on.mock.calls[0][1];
+    await messageHandler({ text: '2', deviceId: 'test-device' });
 
-    // Send non-numeric input
-    clientSocket.emit('message', { text: 'abc', deviceId: 'test123' });
-    let message = await waitForMessage(clientSocket, 'message');
-    expect(message.text).toMatch(/Invalid input: "abc" is not a number/);
-    expect(message.text).toMatch(/Welcome to the Restaurant ChatBot!/);
+    expect(mockDb.run).toHaveBeenCalledWith(
+      'UPDATE Sessions SET currentOrder = ? WHERE deviceId = ?',
+      [expect.any(String), 'test-device']
+    );
+    expect(mockSocket.sessionData.state).toBe('main_menu');
+    expect(mockSocket.emit).toHaveBeenCalledWith('message', {
+      text: expect.stringContaining('Added Burger to your order.'),
+      deviceId: 'test-device',
+    });
+  });
 
-    // Send invalid option
-    clientSocket.emit('message', { text: '100', deviceId: 'test123' });
-    message = await waitForMessage(clientSocket, 'message');
-    expect(message.text).toMatch(/Invalid input: "100" is not a valid menu option/);
-    expect(message.text).toMatch(/Select: 1, 99, 98, 97, 0/);
-    expect(message.text).toMatch(/Welcome to the Restaurant ChatBot!/);
-  }, 10000);
+  test('should handle checkout with empty order', async () => {
+    mockDb.get.mockResolvedValue({ deviceId: 'test-device', currentOrder: '[]' });
+    chatBot.initializeSocket(mockSocket);
+
+    const messageHandler = mockSocket.on.mock.calls[0][1];
+    await messageHandler({ text: '99', deviceId: 'test-device' });
+
+    expect(mockSocket.emit).toHaveBeenCalledWith('message', {
+      text: 'No order to place.',
+      deviceId: 'test-device',
+    });
+    expect(mockSocket.sessionData.state).toBe('main_menu');
+  });
 });

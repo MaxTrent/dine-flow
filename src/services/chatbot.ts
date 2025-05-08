@@ -2,6 +2,7 @@ import { Socket } from 'socket.io';
 import { Database } from '../models/database';
 import winston from 'winston';
 import { getFormattedMenu, getFormattedSubMenu, getMenuItem, getMenuOption, MenuItem, OrderItem } from '../models/menu';
+import { CustomSocket } from '../types/socket';
 
 // Logger setup
 const logger = winston.createLogger({
@@ -31,10 +32,10 @@ interface SessionData {
 }
 
 // Interface for custom socket
-interface CustomSocket extends Socket {
-  deviceId: string;
-  sessionData: SessionData;
-}
+// interface CustomSocket extends Socket {
+//   deviceId: string;
+//   sessionData: SessionData;
+// }
 
 // Input validation result
 interface ValidationResult {
