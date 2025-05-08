@@ -66,5 +66,11 @@ export async function startServer(): Promise<ServerInstance> {
     });
   });
 
+  // Bind server to PORT environment variable
+  const port = parseInt(process.env.PORT || '4000', 10);
+  server.listen(port, () => {
+    console.log(`Server listening on port ${port}`);
+  });
+
   return { app, server, io };
 }
